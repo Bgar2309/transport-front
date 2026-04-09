@@ -1,44 +1,307 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const API_KEY = import.meta.env.VITE_API_KEY || 'changeme'
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'admin'
 
 const headers = {
   'Content-Type': 'application/json',
   'X-API-Key': API_KEY,
 }
 
+const PALETTE_KEYS = ['carton', 'palette_40x60', 'palette_60x80', 'palette_80x120', 'palette_115x115']
+const PALETTE_LABELS = ['Carton (DPD)', '40×60', '60×80', '80×120', '115×115']
+
+const EMPTY_PRODUIT = {
+  nom: '', description: '', poids_unitaire: '',
+  carton:          { qte_max: 0, transport: 'colis DPD' },
+  palette_40x60:   { qte_max: 0, transport: 'forfait palette, messagerie, affretement' },
+  palette_60x80:   { qte_max: 0, transport: 'forfait palette, messagerie, affretement' },
+  palette_80x120:  { qte_max: 0, transport: 'forfait palette, messagerie, affretement' },
+  palette_115x115: { qte_max: 0, transport: 'affretement' },
+}
+
+// ─── Composant Admin ──────────────────────────────────────────────────────────
+
+function AdminPanel({ onClose }) {
+  const [produits, setProduits]     = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [saving, setSaving]         = useState(null)   // nom du produit en cours de save
+  const [edited, setEdited]         = useState({})     // { nom: produit modifié }
+  const [newRow, setNewRow]         = useState(null)   // null | produit vide
+  const [error, setError]           = useState(null)
+  const [success, setSuccess]       = useState(null)
+
+  const flash = (msg) => { setSuccess(msg); setTimeout(() => setSuccess(null), 3000) }
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_URL}/api/admin/produits`, { headers })
+      const data = await res.json()
+      setProduits(data.produits || [])
+      setEdited({})
+    } catch { setError('Impossible de charger les données') }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const handleCell = (nom, field, subfield, value) => {
+    const base = edited[nom] || produits.find(p => p.nom === nom)
+    const updated = JSON.parse(JSON.stringify(base))
+    if (subfield) updated[field][subfield] = subfield === 'qte_max' ? parseInt(value) || 0 : value
+    else updated[field] = field === 'poids_unitaire' ? parseFloat(value) || 0 : value
+    setEdited(e => ({ ...e, [nom]: updated }))
+  }
+
+  const handleNewCell = (field, subfield, value) => {
+    setNewRow(prev => {
+      const updated = JSON.parse(JSON.stringify(prev))
+      if (subfield) updated[field][subfield] = subfield === 'qte_max' ? parseInt(value) || 0 : value
+      else updated[field] = field === 'poids_unitaire' ? parseFloat(value) || 0 : value
+      return updated
+    })
+  }
+
+  const save = async (nom) => {
+    const p = edited[nom]
+    if (!p) return
+    setSaving(nom)
+    setError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/admin/produits/${encodeURIComponent(nom)}`, {
+        method: 'PUT', headers, body: JSON.stringify(p),
+      })
+      if (!res.ok) throw new Error((await res.json()).detail)
+      flash(`✅ "${nom}" mis à jour`)
+      await load()
+    } catch (e) { setError(e.message) }
+    finally { setSaving(null) }
+  }
+
+  const saveNew = async () => {
+    if (!newRow?.nom?.trim()) { setError('Le nom du produit est obligatoire'); return }
+    setSaving('__new__')
+    setError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/admin/produits`, {
+        method: 'POST', headers, body: JSON.stringify(newRow),
+      })
+      if (!res.ok) throw new Error((await res.json()).detail)
+      flash(`✅ "${newRow.nom}" ajouté`)
+      setNewRow(null)
+      await load()
+    } catch (e) { setError(e.message) }
+    finally { setSaving(null) }
+  }
+
+  const isEdited = (nom) => !!edited[nom]
+
+  return (
+    <div className="admin-overlay">
+      <div className="admin-panel">
+        {/* Header */}
+        <div className="admin-header">
+          <div>
+            <h2>⚙️ Administration — Références produits</h2>
+            <p className="admin-subtitle">Modifications enregistrées directement dans fichiercone.xlsx</p>
+          </div>
+          <button className="admin-close" onClick={onClose}>✖</button>
+        </div>
+
+        {error   && <div className="admin-error">⚠️ {error}</div>}
+        {success && <div className="admin-success">{success}</div>}
+
+        {loading ? (
+          <div className="admin-loading"><div className="spinner-large" /><p>Chargement…</p></div>
+        ) : (
+          <div className="admin-table-wrap">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th className="col-nom">Nom produit</th>
+                  <th className="col-desc">Description</th>
+                  <th className="col-poids">Poids unit.</th>
+                  {PALETTE_LABELS.map(l => (
+                    <th key={l} colSpan={2} className="col-palette-group">{l}</th>
+                  ))}
+                  <th className="col-actions">Actions</th>
+                </tr>
+                <tr className="subheader">
+                  <th /><th /><th />
+                  {PALETTE_LABELS.map(l => (
+                    <>
+                      <th key={l + '-q'} className="col-qte">Qté max</th>
+                      <th key={l + '-t'} className="col-transport">Transport</th>
+                    </>
+                  ))}
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {produits.map(p => {
+                  const row = edited[p.nom] || p
+                  const dirty = isEdited(p.nom)
+                  return (
+                    <tr key={p.nom} className={dirty ? 'row-dirty' : ''}>
+                      <td className="col-nom"><span className="cell-nom">{p.nom}</span></td>
+                      <td>
+                        <input className="cell-input cell-desc"
+                          value={row.description || ''}
+                          onChange={e => handleCell(p.nom, 'description', null, e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="cell-input cell-poids" type="number" step="0.1"
+                          value={row.poids_unitaire ?? ''}
+                          onChange={e => handleCell(p.nom, 'poids_unitaire', null, e.target.value)} />
+                      </td>
+                      {PALETTE_KEYS.map(key => (
+                        <>
+                          <td key={key + '-q'}>
+                            <input className={`cell-input cell-qte ${(row[key]?.qte_max === 0) ? 'cell-zero' : ''}`}
+                              type="number" min="0"
+                              value={row[key]?.qte_max ?? 0}
+                              onChange={e => handleCell(p.nom, key, 'qte_max', e.target.value)} />
+                          </td>
+                          <td key={key + '-t'}>
+                            <input className="cell-input cell-transport"
+                              value={row[key]?.transport || ''}
+                              onChange={e => handleCell(p.nom, key, 'transport', e.target.value)} />
+                          </td>
+                        </>
+                      ))}
+                      <td className="col-actions">
+                        {dirty && (
+                          <button className="btn-save"
+                            onClick={() => save(p.nom)}
+                            disabled={saving === p.nom}>
+                            {saving === p.nom ? '…' : '💾'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+
+                {/* Ligne nouvelle entrée */}
+                {newRow && (
+                  <tr className="row-new">
+                    <td>
+                      <input className="cell-input cell-nom-input" placeholder="Nom *"
+                        value={newRow.nom}
+                        onChange={e => handleNewCell('nom', null, e.target.value)} />
+                    </td>
+                    <td>
+                      <input className="cell-input cell-desc" placeholder="Description"
+                        value={newRow.description}
+                        onChange={e => handleNewCell('description', null, e.target.value)} />
+                    </td>
+                    <td>
+                      <input className="cell-input cell-poids" type="number" step="0.1" placeholder="kg"
+                        value={newRow.poids_unitaire}
+                        onChange={e => handleNewCell('poids_unitaire', null, e.target.value)} />
+                    </td>
+                    {PALETTE_KEYS.map(key => (
+                      <>
+                        <td key={key + '-q'}>
+                          <input className="cell-input cell-qte" type="number" min="0"
+                            value={newRow[key]?.qte_max ?? 0}
+                            onChange={e => handleNewCell(key, 'qte_max', e.target.value)} />
+                        </td>
+                        <td key={key + '-t'}>
+                          <input className="cell-input cell-transport"
+                            value={newRow[key]?.transport || ''}
+                            onChange={e => handleNewCell(key, 'transport', e.target.value)} />
+                        </td>
+                      </>
+                    ))}
+                    <td className="col-actions">
+                      <button className="btn-save" onClick={saveNew} disabled={saving === '__new__'}>
+                        {saving === '__new__' ? '…' : '✅'}
+                      </button>
+                      <button className="btn-cancel" onClick={() => setNewRow(null)}>✖</button>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="admin-footer">
+          {!newRow && (
+            <button className="btn-add-row" onClick={() => setNewRow(JSON.parse(JSON.stringify(EMPTY_PRODUIT)))}>
+              + Ajouter un produit
+            </button>
+          )}
+          <span className="admin-hint">💡 Cliquez dans une cellule pour modifier, puis 💾 pour sauvegarder</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Modal login admin ────────────────────────────────────────────────────────
+
+function LoginModal({ onSuccess, onClose }) {
+  const [pwd, setPwd]   = useState('')
+  const [err, setErr]   = useState(false)
+
+  const submit = () => {
+    if (pwd === ADMIN_PASSWORD) { onSuccess() }
+    else { setErr(true); setPwd('') }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={e => e.stopPropagation()}>
+        <h3>🔐 Accès administrateur</h3>
+        <input
+          type="password" className="modal-input" placeholder="Mot de passe"
+          value={pwd} autoFocus
+          onChange={e => { setPwd(e.target.value); setErr(false) }}
+          onKeyDown={e => e.key === 'Enter' && submit()}
+        />
+        {err && <div className="modal-error">Mot de passe incorrect</div>}
+        <div className="modal-btns">
+          <button className="modal-btn-cancel" onClick={onClose}>Annuler</button>
+          <button className="modal-btn-ok" onClick={submit}>Entrer</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── App principale ───────────────────────────────────────────────────────────
+
 function App() {
   const [productLines, setProductLines] = useState([{ product: '', quantity: '' }])
-  const [department, setDepartment] = useState('')
-  const [produits, setProduits] = useState([])
-  const [result, setResult] = useState(null)
+  const [department, setDepartment]     = useState('')
+  const [produits, setProduits]         = useState([])
+  const [result, setResult]             = useState(null)
   const [isCalculating, setIsCalculating] = useState(false)
-  const [error, setError] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [error, setError]               = useState(null)
+  const [loading, setLoading]           = useState(true)
+  const [showLogin, setShowLogin]       = useState(false)
+  const [showAdmin, setShowAdmin]       = useState(false)
 
-  // Charger la liste des produits au démarrage
-  useEffect(() => {
+  const fetchProduits = useCallback(() => {
     fetch(`${API_URL}/api/produits`, { headers })
       .then(r => r.json())
-      .then(data => {
-        setProduits(data.produits || [])
-        setLoading(false)
-      })
-      .catch(() => {
-        setError('Impossible de contacter le serveur')
-        setLoading(false)
-      })
+      .then(data => { setProduits(data.produits || []); setLoading(false) })
+      .catch(() => { setError('Impossible de contacter le serveur'); setLoading(false) })
   }, [])
+
+  useEffect(() => { fetchProduits() }, [fetchProduits])
 
   const addLine = () => {
     if (productLines.length < 4)
       setProductLines([...productLines, { product: '', quantity: '' }])
   }
 
-  const removeLine = (i) =>
-    setProductLines(productLines.filter((_, idx) => idx !== i))
+  const removeLine = (i) => setProductLines(productLines.filter((_, idx) => idx !== i))
 
   const updateLine = (i, field, value) => {
     const lines = [...productLines]
@@ -47,38 +310,29 @@ function App() {
   }
 
   const calculer = async () => {
-    setError(null)
-    setResult(null)
+    setError(null); setResult(null)
     const dept = parseInt(department)
-    if (isNaN(dept) || dept < 1 || dept > 95) {
-      setError('Département invalide (1-95)')
-      return
-    }
+    if (isNaN(dept) || dept < 1 || dept > 95) { setError('Département invalide (1-95)'); return }
     const lignes = productLines
       .filter(l => l.product && parseInt(l.quantity) > 0)
       .map(l => ({ produit: l.product, quantite: parseInt(l.quantity) }))
-    if (!lignes.length) {
-      setError('Sélectionnez au moins un produit avec une quantité')
-      return
-    }
+    if (!lignes.length) { setError('Sélectionnez au moins un produit avec une quantité'); return }
 
     setIsCalculating(true)
     try {
       const res = await fetch(`${API_URL}/api/calcul`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ lignes, departement: dept }),
+        method: 'POST', headers, body: JSON.stringify({ lignes, departement: dept }),
       })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Erreur serveur')
-      }
+      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Erreur serveur') }
       setResult(await res.json())
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setIsCalculating(false)
-    }
+    } catch (e) { setError(e.message) }
+    finally { setIsCalculating(false) }
+  }
+
+  const handleAdminClose = () => {
+    setShowAdmin(false)
+    // Recharger la liste des produits après modifications éventuelles
+    fetchProduits()
   }
 
   if (loading) {
@@ -94,35 +348,40 @@ function App() {
 
   return (
     <div className="app-container">
+      {/* Icône admin en haut à droite */}
+      <button className="admin-icon-btn" title="Administration" onClick={() => setShowLogin(true)}>
+        ⚙️
+      </button>
+
+      {showLogin && !showAdmin && (
+        <LoginModal
+          onSuccess={() => { setShowLogin(false); setShowAdmin(true) }}
+          onClose={() => setShowLogin(false)}
+        />
+      )}
+
+      {showAdmin && <AdminPanel onClose={handleAdminClose} />}
+
       <div className="header">
         <h1 className="title">Calculateur de Transport EHS</h1>
       </div>
 
       <div className="main-content">
-        {/* ── Panneau gauche ── */}
+        {/* Panneau gauche */}
         <div className="left-panel">
           <div className="card">
             <div className="section-title">📋 Produits à expédier</div>
             <div className="card-content">
               {productLines.map((line, i) => (
                 <div key={i} className="product-line">
-                  <select
-                    className="select"
-                    value={line.product}
-                    onChange={e => updateLine(i, 'product', e.target.value)}
-                  >
+                  <select className="select" value={line.product}
+                    onChange={e => updateLine(i, 'product', e.target.value)}>
                     <option value="">Sélectionner un produit</option>
-                    {produits.map(p => (
-                      <option key={p} value={p}>{p}</option>
-                    ))}
+                    {produits.map(p => <option key={p} value={p}>{p}</option>)}
                   </select>
-                  <input
-                    type="number"
-                    className="input"
-                    placeholder="Quantité"
+                  <input type="number" className="input" placeholder="Quantité"
                     value={line.quantity}
-                    onChange={e => updateLine(i, 'quantity', e.target.value)}
-                  />
+                    onChange={e => updateLine(i, 'quantity', e.target.value)} />
                   {i > 0 && (
                     <button className="btn btn-remove" onClick={() => removeLine(i)}>✖</button>
                   )}
@@ -135,25 +394,15 @@ function App() {
 
               <div className="department-input">
                 <label>🎯 Département de destination</label>
-                <input
-                  type="number"
-                  className="input"
-                  placeholder="Ex: 75"
-                  value={department}
-                  onChange={e => setDepartment(e.target.value)}
-                  min="1" max="95"
-                />
+                <input type="number" className="input" placeholder="Ex: 75"
+                  value={department} onChange={e => setDepartment(e.target.value)}
+                  min="1" max="95" />
               </div>
 
-              {error && (
-                <div className="error-box">⚠️ {error}</div>
-              )}
+              {error && <div className="error-box">⚠️ {error}</div>}
 
-              <button
-                className={`btn-calculate ${isCalculating ? 'calculating' : ''}`}
-                onClick={calculer}
-                disabled={isCalculating}
-              >
+              <button className={`btn-calculate ${isCalculating ? 'calculating' : ''}`}
+                onClick={calculer} disabled={isCalculating}>
                 {isCalculating
                   ? <span className="loading"><span className="spinner" />Calcul…</span>
                   : '🚀 Calculer le transport'}
@@ -162,7 +411,7 @@ function App() {
           </div>
         </div>
 
-        {/* ── Panneau droit ── */}
+        {/* Panneau droit */}
         <div className="right-panel">
           <div className="card">
             <div className="section-title">📊 Résultats</div>
@@ -172,7 +421,6 @@ function App() {
                   Sélectionnez vos produits et cliquez sur "Calculer"
                 </div>
               )}
-
               {result && <ResultDisplay result={result} />}
             </div>
           </div>
@@ -181,6 +429,8 @@ function App() {
     </div>
   )
 }
+
+// ─── ResultDisplay (inchangé) ─────────────────────────────────────────────────
 
 function ResultDisplay({ result }) {
   const { solution_optimale, autres_options, infos, has_palette_complete, details_individuels } = result
