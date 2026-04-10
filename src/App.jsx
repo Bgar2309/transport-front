@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -312,6 +312,66 @@ function LoginModal({ onSuccess, onClose }) {
   )
 }
 
+// ─── Dropdown avec recherche ──────────────────────────────────────────────────
+
+function SearchableSelect({ options, value, onChange, placeholder }) {
+  const [search, setSearch] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setIsOpen(false)
+        setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const filtered = options.filter(opt =>
+    opt.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const handleInputChange = (e) => {
+    setSearch(e.target.value)
+    setIsOpen(true)
+    if (!e.target.value) onChange('')
+  }
+
+  const handleSelect = (opt) => {
+    onChange(opt)
+    setSearch('')
+    setIsOpen(false)
+  }
+
+  return (
+    <div className="searchable-select" ref={ref}>
+      <input
+        type="text"
+        className="select"
+        value={isOpen ? search : value}
+        placeholder={placeholder}
+        onChange={handleInputChange}
+        onFocus={() => setIsOpen(true)}
+      />
+      {isOpen && (
+        <ul className="select-dropdown">
+          {filtered.length > 0
+            ? filtered.map(opt => (
+                <li key={opt} className={opt === value ? 'selected' : ''} onClick={() => handleSelect(opt)}>
+                  {opt}
+                </li>
+              ))
+            : <li className="no-results">Aucun résultat</li>
+          }
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // ─── App principale ───────────────────────────────────────────────────────────
 
 function App() {
@@ -389,11 +449,12 @@ function App() {
             <div className="card-content">
               {productLines.map((line, i) => (
                 <div key={i} className="product-line">
-                  <select className="select" value={line.product}
-                    onChange={e => updateLine(i, 'product', e.target.value)}>
-                    <option value="">Sélectionner un produit</option>
-                    {produits.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
+                  <SearchableSelect
+                    options={produits}
+                    value={line.product}
+                    onChange={v => updateLine(i, 'product', v)}
+                    placeholder="Rechercher un produit…"
+                  />
                   <input type="number" className="input" placeholder="Quantité"
                     value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} />
                   {i > 0 && <button className="btn btn-remove" onClick={() => removeLine(i)}>✖</button>}
